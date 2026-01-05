@@ -11,14 +11,15 @@
 #   2. Create .env file with required secrets
 #   3. Prepare game files:
 #      - For freedm (Zandronum):
-#        • Download freedoom2.wad from https://freedoom.github.io/download.html
-#        • Rename it to doom2.wad (case-sensitive: all lowercase)
-#        • Place doom2.wad and your freedm.wad in ./data/
-#        • Place config files in ./configs/
+#        • Download freedoom2.wad (free, legal Doom II equivalent) from https://freedoom.github.io/download.html
+#        • RENAME it to doom2.wad (must be lowercase 'doom2.wad')
+#        • Place doom2.wad AND freedm.wad in ./data/
+#        • Place your config files in ./configs/
 #      - For warfork:
-#        • The image has a known bug with SteamCMD paths when using persistent volumes
-#        • It may install successfully with the named volumes below, or fail — check logs
-#        • If it loops/fails, consider running without the server volume (ephemeral install) or finding an alternative image
+#        • The image has a known bug with hardcoded root paths ('//server') that conflict with persistent volumes
+#        • We remove the server files volume to avoid the conflict — installation will happen inside the container
+#        • Files will persist across restarts (Docker writable layer), but recreate/remove container to force reinstall
+#        • Custom configs and logs are still persisted
 #   4. Run: docker compose up -d
 #
 # Copyright (c) 2025 DeMoD LLC - All Rights Reserved
@@ -45,8 +46,6 @@ volumes:
     driver: local
   server2-data:
     driver: local
-  warfork-server:
-    name: warfork-server
   warfork-logs:
     name: warfork-logs
 
@@ -59,15 +58,12 @@ services:
     container_name: gsn-discord-bot
     restart: unless-stopped
     environment:
-      # Discord
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - BOT_PREFIX=${BOT_PREFIX:-!gs}
       - ALLOWED_ROLES=${ALLOWED_ROLES:-}
-      # Internal services
       - SELECTOR_URL=http://gsn-selector:8080
       - DCF_ID_URL=http://dcf-id:4000
       - DCF_ID_INTERNAL_KEY=${DCF_ID_INTERNAL_KEY}
-      # Public URLs for user-facing links
       - DCF_PUBLIC_URL=${DCF_PUBLIC_URL:-https://dcf.demod.ltd}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - RATE_LIMIT_MS=${RATE_LIMIT_MS:-2000}
@@ -102,12 +98,10 @@ services:
     container_name: gsn-selector
     restart: unless-stopped
     environment:
-      # Server config
       - MAX_ACTIVE_SERVERS=2
       - SERVER_TIMEOUT_SECONDS=3600
       - DOCKER_SOCKET=/var/run/docker.sock
       - CONFIG_PATH=/share/gsn-configs
-      # DCF Integration
       - DCF_ID_URL=http://dcf-id:4000
       - DCF_ID_INTERNAL_KEY=${DCF_ID_INTERNAL_KEY}
       - METER_URL=http://gsn-meter:9001
@@ -218,3 +212,33 @@ services:
           memory: 2048M
     security_opt:
       - no-new-privileges:true
+
+  ##############################################################################
+  # Warfork Dedicated Server (workaround for bugged image)
+  ##############################################################################
+  warfork:
+    image: gelmo/warfork-docker:beta
+    container_name: warfork-server
+    hostname: warfork
+    network_mode: host
+    user: "5000:5000"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2048M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 3
+    environment:
+      - WF_PARAMS=+set dedicated 1 +set sv_ip 127.0.0.1 +set sv_port 8889 +set sv_hostname "Warfork Mesh-Only @ demod.ltd (DCF Required)"
+    volumes:
+      # NO server volume — avoids conflict with bugged '//server' path in entrypoint
+      # Installation happens inside container (persists across restarts)
+      - warfork-logs:/home/warfork/.local/share/warfork-2.1/basewf
+      - ./custom-configs:/var/wf:ro
