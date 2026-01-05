@@ -215,7 +215,7 @@ services:
     security_opt:
       - no-new-privileges:true
 
-    warfork:
+  warfork:
     image: cm2network/steamcmd:latest
     container_name: warfork-server
     hostname: warfork
@@ -245,7 +245,7 @@ services:
       echo 'Starting Warfork install/check...';
       if [ ! -f /warfork/Warfork.app/Contents/Resources/wf_server.x86_64 ] && [ ! -f /warfork/Warfork.app/Contents/Resources/warfork.x86_64 ]; then
         echo 'No binary found - installing with AppID 671610...';
-        /home/steam/steamcmd/steamcmd.sh ${STEAMCMD_ARGS} || echo 'Install failed - check SteamCMD output';
+        /home/steam/steamcmd/steamcmd.sh \${STEAMCMD_ARGS} || echo 'Install failed - check output above';
         echo 'Trying fallback AppID 1136510...';
         /home/steam/steamcmd/steamcmd.sh +force_install_dir /warfork +login anonymous +app_update 1136510 validate +quit || echo 'Fallback also failed';
       else
@@ -254,11 +254,12 @@ services:
       echo 'Launching server...';
       cd /warfork/Warfork.app/Contents/Resources || { echo 'Path not found - check install'; exit 1; };
       if [ -f wf_server.x86_64 ]; then
-        ./wf_server.x86_64 ${WARFORK_PARAMS};
+        ./wf_server.x86_64 \${WARFORK_PARAMS};
       elif [ -f warfork.x86_64 ]; then
-        ./warfork.x86_64 ${WARFORK_PARAMS};
+        ./warfork.x86_64 \${WARFORK_PARAMS};
       else
         echo 'Server binary not found after install - check /warfork contents';
+        ls -la /warfork/Warfork.app/Contents/Resources;
         exit 1;
       fi
       "
