@@ -247,8 +247,8 @@ services:
       +exec /configs/global.cfg
       +exec /configs/freedm.cfg
     volumes:
-      - ./data:/data:ro
-      - ./configs:/configs:ro
+      - ../DCF-DOOM/data:/data:ro
+      - ../DCF-DOOM/configs:/configs:ro
 
   ##############################################################################
   # Warfork Dedicated Server (per official README - may have install issues)
