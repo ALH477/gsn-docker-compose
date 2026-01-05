@@ -1,0 +1,257 @@
+##############################################################################
+# DeMoD Game Server Network - Integrated DCF Stack
+#
+# Architecture:
+#   - Discord Bot → Game Selector → DCF-ID (auth)
+#   - Game Traffic → GSN Meter (metering) → Game Servers
+#   - All usage tracked and billed through Stripe
+#
+# Usage:
+#   1. Load images: nix build .#docker-gsn-selector && ./result | docker load
+#      (Repeat for meter, bot, and dcf-id)
+#   2. Create .env file with required secrets
+#   3. Run: docker compose up -d
+#
+# Copyright (c) 2025 DeMoD LLC - All Rights Reserved - BSD 3
+##############################################################################
+
+networks:
+  dcf-bridge:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
+  # Connect to existing DCF frontend network
+  frontend:
+    external: true
+
+volumes:
+  demod-data:
+    external: true
+    name: demod-data
+  server1-data:
+    driver: local
+  server2-data:
+    driver: local
+
+services:
+  ##############################################################################
+  # DCF-ID - Identity & Billing Service
+  ##############################################################################
+  dcf-id:
+    image: demod/dcf-id:latest
+    container_name: dcf-id
+    restart: unless-stopped
+    environment:
+      - IDENTITY_PORT=4000
+      - DATABASE_URL=sqlite:/data/identity.db?mode=rwc
+      - BASE_URL=${DCF_PUBLIC_URL:-https://dcf.demod.ltd}
+      - RUST_LOG=${LOG_LEVEL:-info}
+      # Secrets (Set these in .env)
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}
+      - DISCORD_REDIRECT_URL=${DISCORD_REDIRECT_URL:-https://dcf.demod.ltd/auth/callback OR ROLL YOUR OWN}
+      - DCF_ID_INTERNAL_KEY=${DCF_ID_INTERNAL_KEY}
+    volumes:
+      - demod-data:/data
+    networks:
+      - dcf-bridge
+      - frontend
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  ##############################################################################
+  # Discord Bot - Ultra-lightweight command interface
+  ##############################################################################
+  gsn-discord-bot:
+    image: demod/gsn-discord-bot:latest
+    container_name: gsn-discord-bot
+    restart: unless-stopped
+    environment:
+      # Discord
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - BOT_PREFIX=${BOT_PREFIX:-!gs}
+      - ALLOWED_ROLES=${ALLOWED_ROLES:-}
+      # Internal services
+      - SELECTOR_URL=http://gsn-selector:8080
+      - DCF_ID_URL=http://dcf-id:4000
+      - DCF_ID_INTERNAL_KEY=${DCF_ID_INTERNAL_KEY}
+      # Public URLs for user-facing links
+      - DCF_PUBLIC_URL=${DCF_PUBLIC_URL:-https://dcf.demod.ltd}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - RATE_LIMIT_MS=${RATE_LIMIT_MS:-2000}
+    networks:
+      - dcf-bridge
+      - frontend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.10"
+          memory: 64M
+    depends_on:
+      gsn-selector:
+        condition: service_healthy
+      dcf-id:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+
+  ##############################################################################
+  # Game Selector - Orchestration with DCF-ID auth verification
+  ##############################################################################
+  gsn-selector:
+    image: demod/gsn-selector:latest
+    container_name: gsn-selector
+    restart: unless-stopped
+    environment:
+      # Server config
+      - MAX_ACTIVE_SERVERS=2
+      - SERVER_TIMEOUT_SECONDS=3600
+      - DOCKER_SOCKET=/var/run/docker.sock
+      - CONFIG_PATH=/share/gsn-configs
+      # DCF Integration
+      - DCF_ID_URL=http://dcf-id:4000
+      - DCF_ID_INTERNAL_KEY=${DCF_ID_INTERNAL_KEY}
+      - METER_URL=http://gsn-meter:9001
+      - MIN_BALANCE_TO_START=${MIN_BALANCE_TO_START:-0.00}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - demod-data:/data:ro
+    networks:
+      - dcf-bridge
+      - frontend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    depends_on:
+      dcf-id:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  ##############################################################################
+  # Traffic Meter - Lightweight proxy that meters game traffic
+  ##############################################################################
+  gsn-meter:
+    image: demod/gsn-meter:latest
+    container_name: gsn-meter
+    restart: unless-stopped
+    environment:
+      - DCF_ID_URL=http://dcf-id:4000
+      - DCF_ID_INTERNAL_KEY=${DCF_ID_INTERNAL_KEY}
+      - UDP_PORT=9000
+      - HTTP_PORT=9001
+      - REPORT_INTERVAL_SECS=60
+      - RUST_LOG=${LOG_LEVEL:-info}
+    networks:
+      - dcf-bridge
+      - frontend
+    ports:
+      # HTTP API for internal management
+      - "9001:9001/tcp"
+      # UDP game traffic - exposed to players
+      - "9000:9000/udp"
+      # Additional UDP ports for multiple game servers
+      - "9002:9002/udp"
+      - "9003:9003/udp"
+      - "9004:9004/udp"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    depends_on:
+      dcf-id:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  ##############################################################################
+  # Game Server 1 (spawned dynamically by selector)
+  ##############################################################################
+  gsn-server-1:
+    image: ${GAME_IMAGE:-itzg/minecraft-server:java21}
+    container_name: gsn-server-1
+    profiles:
+      - game-active
+    environment:
+      - SERVER_ID=1
+      - SERVER_NAME=${SERVER1_NAME:-Server-Alpha}
+      - EULA=TRUE
+      - DCF_GATEWAY=gsn-meter:9000
+    volumes:
+      - server1-data:/data
+      - demod-data:/dcf:ro
+    networks:
+      - dcf-bridge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2048M
+    security_opt:
+      - no-new-privileges:true
+
+  gsn-server-2:
+    image: ${GAME_IMAGE:-itzg/minecraft-server:java21}
+    container_name: gsn-server-2
+    profiles:
+      - game-active
+    environment:
+      - SERVER_ID=2
+      - SERVER_NAME=${SERVER2_NAME:-Server-Beta}
+      - EULA=TRUE
+      - DCF_GATEWAY=gsn-meter:9000
+    volumes:
+      - server2-data:/data
+      - demod-data:/dcf:ro
+    networks:
+      - dcf-bridge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2048M
+    security_opt:
+      - no-new-privileges:true
