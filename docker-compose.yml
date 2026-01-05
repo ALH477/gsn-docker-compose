@@ -234,7 +234,7 @@ services:
         max-size: 10m
         max-file: 3
     environment:
-      - STEAMCMD_ARGS=+force_install_dir /warfork +login YOUR_STEAM_USERNAME YOUR_STEAM_PASSWORD +app_update 1136510 validate +quit
+      - STEAMCMD_ARGS=+force_install_dir /warfork +login anonymous +app_update 1136510 validate +quit
       - WARFORK_PARAMS=+set dedicated 1 +set sv_ip 127.0.0.1 +set sv_port 8889 +set sv_hostname "Warfork Mesh-Only @ demod.ltd (DCF Required)"
     volumes:
       - warfork-install:/warfork
