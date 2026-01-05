@@ -242,7 +242,7 @@ services:
         max-file: 3
     command: >
       -port 8888
-      -iwad /data/doom2.wad
+      -iwad /data/freedm.wad
       -file /data/freedm.wad
       +exec /configs/global.cfg
       +exec /configs/freedm.cfg
@@ -260,8 +260,6 @@ services:
     network_mode: host
     user: "5000:5000"
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
     deploy:
       resources:
         limits:
